@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Deque, Dict, List
+from typing import Callable, Deque, Dict, List, Optional
 from collections import deque
 import simpy
 
@@ -42,6 +42,7 @@ class EdgeServer:
     queue: Deque[Task] = field(default_factory=deque)
 
     compute_energy_j_per_cycle: float = 0.0
+    on_task_completed: Optional[Callable[[Task, float], None]] = field(default=None, repr=False)
 
     def enqueue(self, task: Task) -> None:
         task.status = TaskStatus.QUEUED
@@ -115,5 +116,10 @@ class EdgeServer:
                 head.mark_completed(self.env.now)
                 self.energy_joules -= energy_cost
                 self.queue.popleft()
+                if self.on_task_completed is not None:
+                    try:
+                        self.on_task_completed(head, energy_cost)
+                    except Exception:
+                        pass
 
 

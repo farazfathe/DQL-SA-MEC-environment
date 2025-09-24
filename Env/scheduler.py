@@ -42,8 +42,9 @@ class QLSASchedulerAdapter:
     Actions are discrete placements: "local", ("edge", edge_id), "cloud".
     """
 
-    policy: object  # expects .select_action(state, actions)
+    policy: object  # expects .select_action(state, actions, score_shaping=None)
     edge_ids: Sequence[str]
+    bias_edge: bool = True
 
     def place(self, cell_id: str, tasks: List[Task]) -> tuple[list[Task], list[tuple[str, Task]], list[Task]]:
         local: list[Task] = []
@@ -53,8 +54,22 @@ class QLSASchedulerAdapter:
         actions: list[object] = ["local", "cloud"] + [("edge", e) for e in self.edge_ids]
         state = cell_id  # placeholder state; user can extend with richer features
 
+        def shaping(action: object) -> float:
+            if not self.bias_edge:
+                return 0.0
+            # Small penalty for local/cloud to bias toward edge
+            if action == "local":
+                return 0.1
+            if action == "cloud":
+                return 0.15
+            return 0.0
+
         for task in tasks:
-            choice = self.policy.select_action(state, actions)
+            # Pass shaping to favor edge when roughly comparable
+            try:
+                choice = self.policy.select_action(state, actions, score_shaping=shaping)
+            except TypeError:
+                choice = self.policy.select_action(state, actions)
             if choice == "local":
                 local.append(task)
             elif choice == "cloud":

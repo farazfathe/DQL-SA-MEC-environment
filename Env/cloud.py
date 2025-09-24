@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Dict, List
+from typing import Callable, Dict, List, Optional
 import simpy
 
 from .task import Task, TaskStatus
@@ -28,6 +28,7 @@ class Cloud:
     compute_energy_j_per_cycle: float = 0.0
     env: simpy.Environment | None = field(default=None, repr=False)
     in_queue: simpy.Store | None = field(default=None, repr=False)
+    on_task_completed: Optional[Callable[[Task, float], None]] = field(default=None, repr=False)
 
     def process(self, tasks: List[Task], now: float) -> List[Task]:
         """Process all given tasks sequentially and return those completed.
@@ -77,5 +78,10 @@ class Cloud:
             yield self.env.timeout(exec_time)
             task.mark_completed(self.env.now)
             self.energy_joules -= energy_cost
+            if self.on_task_completed is not None:
+                try:
+                    self.on_task_completed(task, energy_cost)
+                except Exception:
+                    pass
 
 
