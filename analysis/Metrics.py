@@ -53,6 +53,7 @@ class MetricsLogger:
 
     total_energy_j: float = 0.0
     total_completed_tasks: int = 0
+    total_local_completed: int = 0
     total_offloaded: int = 0
     total_cloud_offloaded: int = 0
 
@@ -94,6 +95,8 @@ class MetricsLogger:
 
         if finished_at is not None:
             self.total_completed_tasks += 1
+            if not was_offloaded:
+                self.total_local_completed += 1
         if was_offloaded:
             self.total_offloaded += 1
         if was_to_cloud:
@@ -190,6 +193,7 @@ class MetricsLogger:
         return {
             "total_tasks": float(total_tasks),
             "success_rate": (completed_on_time / float(total_tasks)) if total_tasks else 0.0,
+            "local_completed": float(self.total_local_completed),
             "offloading_ratio": (offloaded / float(total_tasks)) if total_tasks else 0.0,
             "cloud_offloading_ratio": (to_cloud / float(total_tasks)) if total_tasks else 0.0,
             "avg_latency_s": avg_latency,

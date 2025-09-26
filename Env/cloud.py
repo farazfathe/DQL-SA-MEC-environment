@@ -58,6 +58,8 @@ class Cloud:
     def put(self, task: Task) -> None:
         if not self.in_queue:
             raise RuntimeError("Cloud not started; call start(env) first")
+        if task.queued_at is None and self.env is not None:
+            task.queued_at = self.env.now
         self.in_queue.put(task)
 
     def _serve_loop(self):
@@ -75,6 +77,7 @@ class Cloud:
                 task.mark_dropped()
                 continue
             task.mark_started(self.env.now)
+            # queue wait captured via started_at - queued_at in metrics
             yield self.env.timeout(exec_time)
             task.mark_completed(self.env.now)
             self.energy_joules -= energy_cost

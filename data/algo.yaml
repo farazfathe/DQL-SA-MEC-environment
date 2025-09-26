@@ -1,0 +1,16 @@
+q_learning:
+  alpha: 0.1            # learning rate
+  gamma: 0.9            # discount factor
+  epsilon: 0.2          # exploration rate
+  reward_weights:
+    latency: -0.5       # penalty
+    energy: -0.3        # penalty
+    success: 1.0        # reward
+    deadline_miss: -1.0 # strong penalty
+
+simulated_annealing:
+  initial_temperature: 1.0
+  cooling_rate: 0.99
+  min_temperature: 0.001
+  steps_per_call: 20
+  neighbor_fn: default_neighbor

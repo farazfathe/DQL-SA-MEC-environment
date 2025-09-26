@@ -51,6 +51,7 @@ class Task:
     status: TaskStatus = field(default=TaskStatus.CREATED)
     started_at: Optional[float] = None
     finished_at: Optional[float] = None
+    queued_at: Optional[float] = None
 
     def estimated_compute_time(self, cpu_rate_cycles_per_s: float) -> float:
         """Return estimated compute time in seconds for a given CPU rate.

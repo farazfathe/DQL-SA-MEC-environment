@@ -46,6 +46,8 @@ class EdgeServer:
 
     def enqueue(self, task: Task) -> None:
         task.status = TaskStatus.QUEUED
+        if task.queued_at is None:
+            task.queued_at = self.env.now if self.env is not None else 0.0
         self.queue.append(task)
 
     def step(self, now: float, max_time_s: float) -> List[Task]:
@@ -112,6 +114,7 @@ class EdgeServer:
                     self.queue.pop()
                     continue
                 head.mark_started(self.env.now)
+                # queue wait captured via started_at - queued_at in metrics
                 yield self.env.timeout(exec_time)
                 head.mark_completed(self.env.now)
                 self.energy_joules -= energy_cost

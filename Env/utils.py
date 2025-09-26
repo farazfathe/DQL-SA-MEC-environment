@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from typing import Callable
+from typing import Callable, Iterable
 import math
+import random
 
 
 def free_space_path_loss_db(distance_m: float, freq_hz: float) -> float:
@@ -23,6 +24,30 @@ def constant_rate_task_generator(factory: Callable[[float, int], object],
         return [factory(now, i) for i in range(tasks_per_tick)]
 
     return _gen
+
+
+def poisson_task_generator(factory: Callable[[float, int], object], lambda_per_s: float) -> Callable[[float], Iterable[object]]:
+    """Poisson process per second using thinning on 1s buckets for simplicity.
+
+    Returns a generator that, when called with current time `now`, produces
+    N ~ Poisson(lambda_per_s) tasks with timestamps within [now, now+1).
+    """
+    def _gen(now: float):
+        n = _poisson(lambda_per_s)
+        return [factory(now, i) for i in range(n)]
+
+    return _gen
+
+
+def _poisson(lmbda: float) -> int:
+    # Knuth's algorithm
+    L = math.exp(-lmbda)
+    k = 0
+    p = 1.0
+    while p > L:
+        k += 1
+        p *= random.random()
+    return max(0, k - 1)
 
 
 def energy_per_cycle_from_power(power_watts: float, cycles_per_second: float) -> float:
