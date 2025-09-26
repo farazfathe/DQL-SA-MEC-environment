@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import List
 import matplotlib.pyplot as plt
+import numpy as np
 
 
 def plot_latency(step_times: List[float], avg_latency: List[float]) -> None:
@@ -57,5 +58,29 @@ def plot_sa_convergence(iters: List[int], objectives: List[float], temperatures:
     plt.title("SA Convergence")
     plt.grid(True)
     plt.legend()
+
+
+def plot_latency_hist(latencies: List[float]) -> None:
+    plt.figure()
+    if len(latencies) == 0:
+        latencies = [0.0]
+    plt.hist(latencies, bins=min(50, max(10, int(np.sqrt(len(latencies)) ))), log=True, edgecolor='black', alpha=0.7)
+    plt.xlabel("Latency (s)")
+    plt.ylabel("Count (log)")
+    plt.title("Latency Histogram")
+    plt.grid(True, which='both')
+
+
+def plot_latency_cdf(latencies: List[float]) -> None:
+    plt.figure()
+    if len(latencies) == 0:
+        latencies = [0.0]
+    data = np.sort(np.array(latencies))
+    y = np.arange(1, len(data) + 1) / float(len(data))
+    plt.step(data, y, where='post')
+    plt.xlabel("Latency (s)")
+    plt.ylabel("CDF")
+    plt.title("Latency CDF")
+    plt.grid(True)
 
 

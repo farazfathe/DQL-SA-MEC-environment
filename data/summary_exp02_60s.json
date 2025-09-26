@@ -1,0 +1,12 @@
+{
+  "total_tasks": 188.0,
+  "success_rate": 1.0,
+  "local_completed": 337.0,
+  "offloading_ratio": 0.3191489361702128,
+  "cloud_offloading_ratio": 0.05319148936170213,
+  "avg_latency_s": 0.47459675704547394,
+  "avg_wait_s": 0.001395196684895545,
+  "total_energy_j": 173.66525000000087,
+  "energy_efficiency": 8.729437812112627,
+  "attempts_mean": 14.52659574468085
+}

@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Callable, Iterable, List, Optional
 import simpy
+import random
 
 from .task import Task, TaskStatus
 
@@ -39,6 +40,8 @@ class Cell:
     # Model knobs
     compute_energy_j_per_cycle: float = 0.0
     tx_energy_j_per_bit_to_edge: float = 0.0
+    failure_prob_local: float = 0.0
+    energy_variability_coeff_local: float = 0.0
 
     def tick(self, dt_s: float, now_s: Optional[float] = None) -> List[Task]:
         """Advance simulation time and generate tasks.
@@ -75,7 +78,11 @@ class Cell:
             # cannot finish before deadline locally
             return False
 
+        # Energy variability (e.g., DVFS or utilization jitter)
         energy_cost = task.cpu_cycles * self.compute_energy_j_per_cycle
+        if self.energy_variability_coeff_local > 0.0:
+            jitter = random.uniform(-self.energy_variability_coeff_local, self.energy_variability_coeff_local)
+            energy_cost *= max(0.0, 1.0 + jitter)
         if energy_cost > self.battery_energy_joules:
             return False
 
@@ -83,8 +90,13 @@ class Cell:
         task.mark_started(now)
         task.mark_completed(finish_time)
         self.battery_energy_joules -= energy_cost
-        self.completed_tasks.append(task)
-        return True
+        # Simulate local failure probability
+        if random.random() < self.failure_prob_local:
+            task.mark_dropped()
+            return False
+        else:
+            self.completed_tasks.append(task)
+            return True
 
     def offload_to_edge_energy_cost(self, task: Task) -> float:
         return task.bit_size * self.tx_energy_j_per_bit_to_edge
