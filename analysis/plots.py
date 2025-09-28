@@ -84,3 +84,61 @@ def plot_latency_cdf(latencies: List[float]) -> None:
     plt.grid(True)
 
 
+def plot_scheduling_time(step_times: List[float], sched_time_s: List[float], per_decision: List[float] | None = None) -> None:
+    plt.figure()
+    plt.plot(step_times, sched_time_s, label="Scheduling Time / window (s)")
+    if per_decision is not None:
+        plt.plot(step_times, per_decision, label="Scheduling Time / decision (s)")
+    plt.xlabel("Time (s)")
+    plt.ylabel("Seconds")
+    plt.title("Scheduler Runtime")
+    plt.grid(True)
+    plt.legend()
+
+
+def plot_accept_failure(step_times: List[float], accept: List[float], failure: List[float]) -> None:
+    plt.figure()
+    plt.plot(step_times, accept, label="Acceptance Ratio")
+    plt.plot(step_times, failure, label="Failure Ratio")
+    plt.xlabel("Time (s)")
+    plt.ylabel("Ratio")
+    plt.title("Acceptance vs Failure")
+    plt.grid(True)
+    plt.legend()
+
+
+def plot_load_balance(step_times: List[float], cv: List[float]) -> None:
+    plt.figure()
+    plt.plot(step_times, cv, label="Load Balance (CV of util)")
+    plt.xlabel("Time (s)")
+    plt.ylabel("Coefficient of Variation")
+    plt.title("Load Balance across Edges")
+    plt.grid(True)
+    plt.legend()
+
+
+def plot_energy_efficiency(step_times: List[float], eff: List[float]) -> None:
+    plt.figure()
+    plt.plot(step_times, eff, label="Energy Efficiency (tasks/J)")
+    plt.xlabel("Time (s)")
+    plt.ylabel("Tasks per Joule")
+    plt.title("Energy Efficiency over Time")
+    plt.grid(True)
+    plt.legend()
+
+
+def plot_rl(iters: List[int], reward: List[float] | None = None, epsilon: List[float] | None = None, objective: List[float] | None = None) -> None:
+    plt.figure()
+    if reward is not None:
+        plt.plot(iters, reward, label="Reward")
+    if objective is not None:
+        plt.plot(iters, objective, label="Objective")
+    if epsilon is not None:
+        plt.plot(iters, epsilon, label="Epsilon")
+    plt.xlabel("Iteration")
+    plt.ylabel("Value")
+    plt.title("RL Convergence Signals")
+    plt.grid(True)
+    plt.legend()
+
+

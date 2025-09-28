@@ -40,6 +40,15 @@ class StepRecord:
     throughput_tasks_per_s: float
     avg_latency_s: Optional[float]
     avg_wait_s: Optional[float]
+    # New per-window metrics
+    sched_time_s: float = 0.0
+    sched_time_per_decision_s: float = 0.0
+    decisions: int = 0
+    arrivals: int = 0
+    acceptance_ratio: Optional[float] = None
+    failure_ratio: Optional[float] = None
+    busy_time_total_s: float = 0.0
+    load_balance_cv: Optional[float] = None
     server_utilization: Dict[str, float] = field(default_factory=dict)
     queue_lengths: Dict[str, int] = field(default_factory=dict)
     node_completed: Dict[str, int] = field(default_factory=dict)
@@ -70,6 +79,9 @@ class MetricsLogger:
     total_local_completed: int = 0
     total_offloaded: int = 0
     total_cloud_offloaded: int = 0
+    # Aggregates for algorithm (scheduling) runtime
+    total_sched_time_s: float = 0.0
+    total_sched_decisions: int = 0
 
     def log_task(
         self,
@@ -161,6 +173,14 @@ class MetricsLogger:
         node_completed: Optional[Dict[str, int]] = None,
         node_energy_j: Optional[Dict[str, float]] = None,
         window_s: float = 1.0,
+        # New optional window stats
+        sched_time_s: float = 0.0,
+        decisions: int = 0,
+        arrivals: int = 0,
+        acceptance_ratio: Optional[float] = None,
+        failure_ratio: Optional[float] = None,
+        busy_time_total_s: float = 0.0,
+        load_balance_cv: Optional[float] = None,
     ) -> None:
         avg_latency = (sum(latencies) / len(latencies)) if latencies else None
         avg_wait = (sum(waits) / len(waits)) if waits else None
@@ -168,6 +188,9 @@ class MetricsLogger:
         total = completed_tasks + offloaded  # denominator for offload ratio
         off_ratio = (offloaded / total) if total > 0 else 0.0
         cloud_ratio = (cloud_offloaded / total) if total > 0 else 0.0
+        # Track scheduling time aggregates
+        self.total_sched_time_s += max(0.0, float(sched_time_s))
+        self.total_sched_decisions += max(0, int(decisions))
         self.steps.append(
             StepRecord(
                 time_s=time_s,
@@ -178,6 +201,14 @@ class MetricsLogger:
                 throughput_tasks_per_s=throughput,
                 avg_latency_s=avg_latency,
                 avg_wait_s=avg_wait,
+                sched_time_s=float(sched_time_s),
+                sched_time_per_decision_s=(float(sched_time_s) / float(decisions)) if decisions > 0 else 0.0,
+                decisions=int(decisions),
+                arrivals=int(arrivals),
+                acceptance_ratio=acceptance_ratio,
+                failure_ratio=failure_ratio,
+                busy_time_total_s=float(busy_time_total_s),
+                load_balance_cv=load_balance_cv,
                 server_utilization=server_utilization or {},
                 queue_lengths=queue_lengths or {},
                 node_completed=node_completed or {},
@@ -225,9 +256,25 @@ class MetricsLogger:
         attempts_mean = (
             sum(self.attempts.get(tid, 0) for tid in self.tasks.keys()) / float(max(1, total_tasks))
         )
+        # Makespan: from first task created to last finished
+        first_created = min((t.created_at for t in self.tasks.values()), default=None)
+        last_finished = max((t.finished_at for t in self.tasks.values() if t.finished_at is not None), default=None)
+        makespan = (last_finished - first_created) if (first_created is not None and last_finished is not None) else 0.0
+        # Scheduling time aggregates
+        mean_sched_per_decision = (self.total_sched_time_s / float(self.total_sched_decisions)) if self.total_sched_decisions > 0 else 0.0
+        # Algorithm objective stats if present
+        obj_vals = [r.objective for r in self.rl if r.objective is not None]
+        obj_mean = (sum(obj_vals) / float(len(obj_vals))) if obj_vals else None
+        obj_final = obj_vals[-1] if obj_vals else None
+        # Acceptance/failure
+        success_rate = (completed_on_time / float(total_tasks)) if total_tasks else 0.0
+        failure_ratio = 1.0 - success_rate if total_tasks else 0.0
+        # Total processing (service) time across all nodes over run
+        total_processing_time_s = sum((s.busy_time_total_s for s in self.steps), start=0.0)
         return {
             "total_tasks": float(total_tasks),
-            "success_rate": (completed_on_time / float(total_tasks)) if total_tasks else 0.0,
+            "success_rate": success_rate,
+            "failure_ratio": failure_ratio,
             "local_completed": float(self.total_local_completed),
             "offloading_ratio": (offloaded / float(total_tasks)) if total_tasks else 0.0,
             "cloud_offloading_ratio": (to_cloud / float(total_tasks)) if total_tasks else 0.0,
@@ -236,6 +283,12 @@ class MetricsLogger:
             "total_energy_j": self.total_energy_j,
             "energy_efficiency": (self.total_completed_tasks / self.total_energy_j) if self.total_energy_j > 0 else 0.0,
             "attempts_mean": attempts_mean,
+            "makespan_s": makespan,
+            "sched_time_total_s": self.total_sched_time_s,
+            "sched_time_per_decision_s": mean_sched_per_decision,
+            "objective_mean": obj_mean if obj_mean is not None else 0.0,
+            "objective_final": obj_final if obj_final is not None else 0.0,
+            "total_processing_time_s": float(total_processing_time_s),
         }
 
 
