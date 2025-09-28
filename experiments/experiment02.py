@@ -27,6 +27,7 @@ from Env.utils import constant_rate_task_generator, energy_per_cycle_from_power
 from Env.utils import poisson_task_generator
 
 from algos.DQN_agent import DQNAgent
+from algos.dqn_utils import compute_reward
 from algos.simulated_annealing import SimulatedAnnealing
 from algos.QL_SA_wrapper import QLSAWrapper
 
@@ -192,6 +193,9 @@ def run_experiment_02(
     summary_json_path: Optional[str] = None,
     timeseries_csv_path: Optional[str] = None,
     aggregated_generation: bool = True,
+    # DQN training knobs integrated into the main workflow
+    warmup_windows: int = 10_000,
+    eval_interval_windows: int = 10_000,
 ) -> str:
     # Load configs
     env_raw = load_yaml(env_cfg_path)
@@ -367,9 +371,64 @@ def run_experiment_02(
                         return 0.05
                     return 0.0
                 _t0 = time.perf_counter()
-                choice = policy.select_action(c.cell_id, actions, score_shaping=_shaping)
+                if iteration < int(warmup_windows):
+                    # Heuristic warm-up: local-first, else first edge, else cloud
+                    if "local" in actions:
+                        choice = "local"
+                    elif any(isinstance(a, tuple) and a[0] == "edge" for a in actions):
+                        choice = next(a for a in actions if isinstance(a, tuple) and a[0] == "edge")
+                    else:
+                        choice = "cloud"
+                else:
+                    choice = policy.select_action(c.cell_id, actions, score_shaping=_shaping)
                 sched_time_this_tick += (time.perf_counter() - _t0)
                 sched_decisions_this_tick += 1
+                # Per-decision DQN update with shaped reward (approximate immediate outcome)
+                attempt = 1
+                offload_type = "local" if choice == "local" else ("cloud" if choice == "cloud" else "edge")
+                base_lat = float(env_conf["network"]["latency"]["iot_to_mec"]) if offload_type != "local" else 0.0
+                jitter = float(env_conf["network"].get("jitter_s", 0.0)) if offload_type != "local" else 0.0
+                tx_time = 0.0 if offload_type == "local" else ((t.bit_size / bw_iot_to_mec if bw_iot_to_mec > 0 else 0.0) + max(0.0, base_lat + random.uniform(-jitter, jitter)))
+                if offload_type == "local":
+                    compute_time = t.estimated_compute_time(cell_cpu_rate)
+                    energy = t.cpu_cycles * cell_energy_per_cycle
+                    success_p = 1.0 - float(failure_prob_local)
+                elif offload_type == "cloud":
+                    compute_time = t.estimated_compute_time(cloud_cpu_rate)
+                    energy = (t.bit_size * float(env_conf["cell"]["tx_energy_per_bit"])) + (t.cpu_cycles * cloud_compute_energy_per_cycle)
+                    success_p = 1.0 - float(failure_prob_cloud)
+                else:
+                    compute_time = t.estimated_compute_time(edge_cpu_rate)
+                    energy = (t.bit_size * float(env_conf["cell"]["tx_energy_per_bit"])) + (t.cpu_cycles * edge_compute_energy_per_cycle)
+                    success_p = 1.0 - float(failure_prob_edge)
+                latency_est = tx_time + compute_time
+                will_meet_deadline = (now + latency_est) <= t.deadline
+                success_flag = will_meet_deadline and (random.random() < success_p)
+                r = compute_reward({
+                    "success": bool(success_flag),
+                    "latency": float(latency_est),
+                    "energy": float(energy),
+                    "attempt": int(attempt),
+                    "offload_type": offload_type,
+                }, 0.0)
+                try:
+                    policy.update(
+                        state=c.cell_id,
+                        action=choice,
+                        reward=float(r),
+                        next_state=c.cell_id,
+                        next_actions=actions,
+                        done=True,
+                    )
+                except TypeError:
+                    ql.update(
+                        state=c.cell_id,
+                        action=choice,
+                        reward=float(r),
+                        next_state=c.cell_id,
+                        next_actions=actions,
+                        done=True,
+                    )
                 if choice == "local":
                     if c.execute_locally(t, now):
                         if t.started_at is not None:
@@ -464,9 +523,63 @@ def run_experiment_02(
                             return 0.05
                         return 0.0
                     _t0 = time.perf_counter()
-                    choice = policy.select_action(c.cell_id, actions, score_shaping=_shaping)
+                    if iteration < int(warmup_windows):
+                        if "local" in actions:
+                            choice = "local"
+                        elif any(isinstance(a, tuple) and a[0] == "edge" for a in actions):
+                            choice = next(a for a in actions if isinstance(a, tuple) and a[0] == "edge")
+                        else:
+                            choice = "cloud"
+                    else:
+                        choice = policy.select_action(c.cell_id, actions, score_shaping=_shaping)
                     sched_time_this_tick += (time.perf_counter() - _t0)
                     sched_decisions_this_tick += 1
+                    # DQN update per decision (approximate)
+                    attempt = 1
+                    offload_type = "local" if choice == "local" else ("cloud" if choice == "cloud" else "edge")
+                    base_lat = float(env_conf["network"]["latency"]["iot_to_mec"]) if offload_type != "local" else 0.0
+                    jitter = float(env_conf["network"].get("jitter_s", 0.0)) if offload_type != "local" else 0.0
+                    tx_time = 0.0 if offload_type == "local" else ((t.bit_size / bw_iot_to_mec if bw_iot_to_mec > 0 else 0.0) + max(0.0, base_lat + random.uniform(-jitter, jitter)))
+                    if offload_type == "local":
+                        compute_time = t.estimated_compute_time(cell_cpu_rate)
+                        energy = t.cpu_cycles * cell_energy_per_cycle
+                        success_p = 1.0 - float(failure_prob_local)
+                    elif offload_type == "cloud":
+                        compute_time = t.estimated_compute_time(cloud_cpu_rate)
+                        energy = (t.bit_size * float(env_conf["cell"]["tx_energy_per_bit"])) + (t.cpu_cycles * cloud_compute_energy_per_cycle)
+                        success_p = 1.0 - float(failure_prob_cloud)
+                    else:
+                        compute_time = t.estimated_compute_time(edge_cpu_rate)
+                        energy = (t.bit_size * float(env_conf["cell"]["tx_energy_per_bit"])) + (t.cpu_cycles * edge_compute_energy_per_cycle)
+                        success_p = 1.0 - float(failure_prob_edge)
+                    latency_est = tx_time + compute_time
+                    will_meet_deadline = (float(env.now) + latency_est) <= t.deadline
+                    success_flag = will_meet_deadline and (random.random() < success_p)
+                    r = compute_reward({
+                        "success": bool(success_flag),
+                        "latency": float(latency_est),
+                        "energy": float(energy),
+                        "attempt": int(attempt),
+                        "offload_type": offload_type,
+                    }, 0.0)
+                    try:
+                        policy.update(
+                            state=c.cell_id,
+                            action=choice,
+                            reward=float(r),
+                            next_state=c.cell_id,
+                            next_actions=actions,
+                            done=True,
+                        )
+                    except TypeError:
+                        ql.update(
+                            state=c.cell_id,
+                            action=choice,
+                            reward=float(r),
+                            next_state=c.cell_id,
+                            next_actions=actions,
+                            done=True,
+                        )
                     if choice == "local":
                         if c.execute_locally(t, float(env.now)):
                             if t.started_at is not None:
@@ -550,15 +663,21 @@ def run_experiment_02(
             # Advance time window for metrics aggregation
             yield env.timeout(window_s)
 
-            # Objective proxy (use averaged latencies and offload ratio)
+            # Objective proxy (use averaged latencies and offload ratio) — log only
             avg_lat = (sum(latencies) / len(latencies)) if latencies else 0.0
             total_new = max(1, completed_this_tick + offloaded_count)
             edge_offload_ratio = offloaded_count / total_new
             Z = 0.6 * avg_lat + 0.2 * (1.0 - edge_offload_ratio) + 0.2 * (energy_this_tick)
-            reward = -(Z - last_objective)
-            next_state = iteration + 1
-            ql.update(state=iteration, action="schedule", reward=reward, next_state=next_state, next_actions=["schedule"]) 
-            metrics.log_rl(iteration=iteration, epsilon=float(ql.epsilon), reward=float(reward), objective=float(Z))
+            reward_window = -(Z - last_objective)
+            last_objective = Z
+            metrics.log_rl(iteration=iteration, epsilon=float(ql.epsilon), reward=float(reward_window), objective=float(Z))
+
+            # Periodic approximate evaluation readout
+            if (iteration > 0) and (iteration % int(eval_interval_windows) == 0):
+                try:
+                    print(f"[Eval @ {iteration}] avg_lat={avg_lat:.4f} edge_offload={edge_offload_ratio:.3f} eps={ql.epsilon:.3f}")
+                except Exception:
+                    pass
 
             # Per-node utilization/energy snapshot for this window
             node_util: Dict[str, float] = {}
