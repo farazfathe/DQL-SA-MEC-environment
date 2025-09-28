@@ -68,6 +68,11 @@ class RLRecord:
 
 @dataclass
 class MetricsLogger:
+    record_tasks: bool = True
+    record_events: bool = True
+    record_steps: bool = True
+    record_rl: bool = True
+
     tasks: Dict[str, TaskRecord] = field(default_factory=dict)
     steps: List[StepRecord] = field(default_factory=list)
     rl: List[RLRecord] = field(default_factory=list)
@@ -146,7 +151,6 @@ class MetricsLogger:
             self.total_energy_j += max(0.0, energy_j)
 
     def log_event(self, task_id: str, time_s: float, event: str, node: Optional[str] = None, **details) -> None:
-        self.events.append(EventRecord(task_id=task_id, time_s=time_s, event=event, node=node, details=details))
         # Count attempts only on processing starts (exclude tx_start)
         if event in {"local_start", "edge_start", "cloud_start"}:
             self.attempts[task_id] = self.attempts.get(task_id, 0) + 1
@@ -157,6 +161,9 @@ class MetricsLogger:
         if event.endswith("_start") and task_id in self.tasks:
             if self.tasks[task_id].started_at is None:
                 self.tasks[task_id].started_at = time_s
+        if not self.record_events:
+            return
+        self.events.append(EventRecord(task_id=task_id, time_s=time_s, event=event, node=node, details=details))
 
     def log_step(
         self,
@@ -191,6 +198,8 @@ class MetricsLogger:
         # Track scheduling time aggregates
         self.total_sched_time_s += max(0.0, float(sched_time_s))
         self.total_sched_decisions += max(0, int(decisions))
+        if not self.record_steps:
+            return
         self.steps.append(
             StepRecord(
                 time_s=time_s,
@@ -227,6 +236,8 @@ class MetricsLogger:
         epsilon: float | None = None,
         reward: float | None = None,
     ) -> None:
+        if not self.record_rl:
+            return
         self.rl.append(
             RLRecord(
                 iteration=iteration,

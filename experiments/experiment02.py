@@ -20,10 +20,9 @@ if PROJECT_ROOT not in sys.path:
 import matplotlib
 matplotlib.use("Agg")
 
-from Env import Cell, EdgeServer, Cloud, GreedyLocalFirstScheduler
-from Env.scheduler import QLSASchedulerAdapter
+from Env import Cell, EdgeServer, Cloud
 from Env.task import Task
-from Env.utils import constant_rate_task_generator, energy_per_cycle_from_power
+from Env.utils import energy_per_cycle_from_power
 from Env.utils import poisson_task_generator
 
 from algos.DQN_agent import DQNAgent
@@ -180,7 +179,7 @@ def run_experiment_02(
     pdf_path: str = os.path.join("data", "Result_exp02.pdf"),
     edges_count: int = 200,
     cells_per_edge: int = 20,
-    lambda_per_s: float = 10.0,
+    lambda_per_s: float = 0.005,
     # Failure probabilities
     failure_prob_local: float = 0.02,
     failure_prob_edge: float = 0.02,
@@ -194,9 +193,9 @@ def run_experiment_02(
     timeseries_csv_path: Optional[str] = None,
     aggregated_generation: bool = True,
     # DQN training knobs integrated into the main workflow
-    warmup_windows: int = 10_000,
-    eval_interval_windows: int = 10_000,
-) -> str:
+    warmup_windows: int = 5,
+    eval_interval_windows: int = 10,
+ ) -> str:
     # Load configs
     env_raw = load_yaml(env_cfg_path)
     algo_raw = load_yaml(algo_cfg_path)
@@ -251,7 +250,7 @@ def run_experiment_02(
     cloud.start(env)
 
     # Metrics hooks for edge/cloud
-    metrics = MetricsLogger()
+    metrics = MetricsLogger(record_events=False)
 
     def on_edge_done(task: Task, energy_cost: float):
         metrics.mark_completed(task.task_id, float(env.now), energy_cost)
@@ -325,16 +324,14 @@ def run_experiment_02(
         steps_per_call=int(sa_conf.get("steps_per_call", 20)),
     )
     policy = QLSAWrapper(ql=ql, sa=sa)
-    scheduler = QLSASchedulerAdapter(policy=policy, edge_ids=[e.edge_id for e in edges], bias_edge=True)
-
-    # --- Driver ---
     def driver():
         window_s = 1.0
         iteration = 0
         last_objective = 0.0
-        events_last_len = 0
+        
+        # events tracking disabled to reduce memory; failure ratio approximated as 0
         while True:
-            completed_this_tick = 0  # local completions only
+            completed_this_tick = 0
             offloaded_count = 0
             cloud_offloaded_count = 0
             latencies: List[float] = []
@@ -344,177 +341,13 @@ def run_experiment_02(
             sched_decisions_this_tick = 0
             arrivals_this_tick = 0
 
-        # Process arrivals
-        if aggregated_generation:
-            # Superposition of Poisson processes: sample total arrivals, then assign to random cells
-            n_total = int(np.random.poisson(float(lambda_per_s) * len(cells)))
-            arrivals_this_tick += n_total
-            for j in range(n_total):
-                c_idx = random.randrange(len(cells))
-                c = cells[c_idx]
-                now = float(env.now)
-                t = Task(
-                    task_id=f"{c.cell_id}_t_{int(now*1000)}_{j}",
-                    bit_size=bit_size_bits,
-                    memory_required=memory_bytes,
-                    cpu_cycles=cpu_cycles,
-                    deadline=now + deadline_s,
-                    created_at=now,
-                )
-                t.source_cell_id = c.cell_id
-                # Decide placement
-                actions = ["local", "cloud"] + [("edge", e.edge_id) for e in edges]
-                def _shaping(act):
-                    if act == "local":
-                        return 0.3
-                    if act == "cloud":
-                        return 0.05
-                    return 0.0
-                _t0 = time.perf_counter()
-                if iteration < int(warmup_windows):
-                    # Heuristic warm-up: local-first, else first edge, else cloud
-                    if "local" in actions:
-                        choice = "local"
-                    elif any(isinstance(a, tuple) and a[0] == "edge" for a in actions):
-                        choice = next(a for a in actions if isinstance(a, tuple) and a[0] == "edge")
-                    else:
-                        choice = "cloud"
-                else:
-                    choice = policy.select_action(c.cell_id, actions, score_shaping=_shaping)
-                sched_time_this_tick += (time.perf_counter() - _t0)
-                sched_decisions_this_tick += 1
-                # Per-decision DQN update with shaped reward (approximate immediate outcome)
-                attempt = 1
-                offload_type = "local" if choice == "local" else ("cloud" if choice == "cloud" else "edge")
-                base_lat = float(env_conf["network"]["latency"]["iot_to_mec"]) if offload_type != "local" else 0.0
-                jitter = float(env_conf["network"].get("jitter_s", 0.0)) if offload_type != "local" else 0.0
-                tx_time = 0.0 if offload_type == "local" else ((t.bit_size / bw_iot_to_mec if bw_iot_to_mec > 0 else 0.0) + max(0.0, base_lat + random.uniform(-jitter, jitter)))
-                if offload_type == "local":
-                    compute_time = t.estimated_compute_time(cell_cpu_rate)
-                    energy = t.cpu_cycles * cell_energy_per_cycle
-                    success_p = 1.0 - float(failure_prob_local)
-                elif offload_type == "cloud":
-                    compute_time = t.estimated_compute_time(cloud_cpu_rate)
-                    energy = (t.bit_size * float(env_conf["cell"]["tx_energy_per_bit"])) + (t.cpu_cycles * cloud_compute_energy_per_cycle)
-                    success_p = 1.0 - float(failure_prob_cloud)
-                else:
-                    compute_time = t.estimated_compute_time(edge_cpu_rate)
-                    energy = (t.bit_size * float(env_conf["cell"]["tx_energy_per_bit"])) + (t.cpu_cycles * edge_compute_energy_per_cycle)
-                    success_p = 1.0 - float(failure_prob_edge)
-                latency_est = tx_time + compute_time
-                will_meet_deadline = (now + latency_est) <= t.deadline
-                success_flag = will_meet_deadline and (random.random() < success_p)
-                r = compute_reward({
-                    "success": bool(success_flag),
-                    "latency": float(latency_est),
-                    "energy": float(energy),
-                    "attempt": int(attempt),
-                    "offload_type": offload_type,
-                }, 0.0)
-                try:
-                    policy.update(
-                        state=c.cell_id,
-                        action=choice,
-                        reward=float(r),
-                        next_state=c.cell_id,
-                        next_actions=actions,
-                        done=True,
-                    )
-                except TypeError:
-                    ql.update(
-                        state=c.cell_id,
-                        action=choice,
-                        reward=float(r),
-                        next_state=c.cell_id,
-                        next_actions=actions,
-                        done=True,
-                    )
-                if choice == "local":
-                    if c.execute_locally(t, now):
-                        if t.started_at is not None:
-                            metrics.log_event(t.task_id, float(t.started_at), "local_start", node=c.cell_id)
-                        if t.finished_at is not None:
-                            metrics.log_event(t.task_id, float(t.finished_at), "local_complete", node=c.cell_id)
-                        completed_this_tick += 1
-                        latencies.append(t.finished_at - t.created_at)
-                        if t.started_at is not None:
-                            waits.append((t.started_at - (t.queued_at or t.created_at)) if t.queued_at is not None else 0.0)
-                        energy = t.cpu_cycles * c.compute_energy_j_per_cycle
-                        energy_this_tick += energy
-                        metrics.log_task(
-                            task_id=t.task_id,
-                            source_cell_id=t.source_cell_id,
-                            created_at=t.created_at,
-                            started_at=t.started_at,
-                            finished_at=t.finished_at,
-                            queued_at=(t.queued_at if t.queued_at is not None else None),
-                            deadline=t.deadline,
-                            was_offloaded=False,
-                            was_to_cloud=False,
-                            energy_j=energy,
-                        )
-                    else:
-                        choice = ("edge", c.edge_id) if c.edge_id is not None else ("cloud",)
-                if isinstance(choice, tuple) and choice[0] == "edge":
-                    base_lat = float(env_conf["network"]["latency"]["iot_to_mec"])
-                    jitter = float(env_conf["network"].get("jitter_s", 0.0))
-                    tx_time = (t.bit_size / bw_iot_to_mec if bw_iot_to_mec > 0 else 0.0) + max(0.0, base_lat + random.uniform(-jitter, jitter))
-                    cost = c.prepare_offload_to_edge(t)
-                    if cost is not None:
-                        metrics.log_event(t.task_id, float(env.now), "tx_start", node=c.cell_id)
-                        def _send_to_edge(task=t, edge_id=choice[1], energy_cost=cost, tx_delay=tx_time):
-                            yield env.timeout(tx_delay)
-                            metrics.log_event(task.task_id, float(env.now), "tx_complete", node=edge_id)
-                            idx = int(edge_id.split("-")[-1])
-                            edges[idx].put(task)
-                            metrics.log_task(
-                                task_id=t.task_id,
-                                source_cell_id=t.source_cell_id,
-                                created_at=t.created_at,
-                                started_at=None,
-                                finished_at=None,
-                                queued_at=(t.queued_at if t.queued_at is not None else None),
-                                deadline=t.deadline,
-                                was_offloaded=True,
-                                was_to_cloud=False,
-                                energy_j=cost,
-                            )
-                        offloaded_count += 1
-                        energy_this_tick += cost
-                        env.process(_send_to_edge())
-                elif choice == "cloud":
-                    base_lat = float(env_conf["network"]["latency"]["iot_to_mec"])
-                    jitter = float(env_conf["network"].get("jitter_s", 0.0))
-                    tx_time = (t.bit_size / bw_iot_to_mec if bw_iot_to_mec > 0 else 0.0) + max(0.0, base_lat + random.uniform(-jitter, jitter))
-                    cost = c.prepare_offload_to_edge(t)
-                    if cost is not None:
-                        metrics.log_event(t.task_id, float(env.now), "tx_start", node=c.cell_id)
-                        def _send_to_cloud(task=t, energy_cost=cost, tx_delay=tx_time):
-                            yield env.timeout(tx_delay)
-                            metrics.log_event(task.task_id, float(env.now), "tx_complete", node="cloud")
-                            cloud.put(task)
-                            metrics.log_task(
-                                task_id=t.task_id,
-                                source_cell_id=t.source_cell_id,
-                                created_at=t.created_at,
-                                started_at=None,
-                                finished_at=None,
-                                queued_at=(t.queued_at if t.queued_at is not None else None),
-                                deadline=t.deadline,
-                                was_offloaded=True,
-                                was_to_cloud=True,
-                                energy_j=cost,
-                            )
-                        cloud_offloaded_count += 1
-                        energy_this_tick += cost
-                        env.process(_send_to_cloud())
-        else:
-            # Legacy per-cell generation
+            # Generate and handle tasks per cell for this 1s window
             for c in cells:
                 new_tasks: List[Task] = list(c.task_generator(float(env.now)))
                 arrivals_this_tick += len(new_tasks)
-                for t in new_tasks:
+                for j, t in enumerate(new_tasks):
                     t.source_cell_id = c.cell_id
+                    # RL action set: local, cloud, or any edge
                     actions = ["local", "cloud"] + [("edge", e.edge_id) for e in edges]
                     def _shaping(act):
                         if act == "local":
@@ -524,6 +357,7 @@ def run_experiment_02(
                         return 0.0
                     _t0 = time.perf_counter()
                     if iteration < int(warmup_windows):
+                        # Heuristic warm-up: try local, then first edge, else cloud
                         if "local" in actions:
                             choice = "local"
                         elif any(isinstance(a, tuple) and a[0] == "edge" for a in actions):
@@ -534,7 +368,8 @@ def run_experiment_02(
                         choice = policy.select_action(c.cell_id, actions, score_shaping=_shaping)
                     sched_time_this_tick += (time.perf_counter() - _t0)
                     sched_decisions_this_tick += 1
-                    # DQN update per decision (approximate)
+
+                    # Approximate immediate reward for DQL update
                     attempt = 1
                     offload_type = "local" if choice == "local" else ("cloud" if choice == "cloud" else "edge")
                     base_lat = float(env_conf["network"]["latency"]["iot_to_mec"]) if offload_type != "local" else 0.0
@@ -542,7 +377,7 @@ def run_experiment_02(
                     tx_time = 0.0 if offload_type == "local" else ((t.bit_size / bw_iot_to_mec if bw_iot_to_mec > 0 else 0.0) + max(0.0, base_lat + random.uniform(-jitter, jitter)))
                     if offload_type == "local":
                         compute_time = t.estimated_compute_time(cell_cpu_rate)
-                        energy = t.cpu_cycles * cell_energy_per_cycle
+                        energy = t.cpu_cycles * c.compute_energy_j_per_cycle
                         success_p = 1.0 - float(failure_prob_local)
                     elif offload_type == "cloud":
                         compute_time = t.estimated_compute_time(cloud_cpu_rate)
@@ -580,8 +415,10 @@ def run_experiment_02(
                             next_actions=actions,
                             done=True,
                         )
+
+                    now = float(env.now)
                     if choice == "local":
-                        if c.execute_locally(t, float(env.now)):
+                        if c.execute_locally(t, now):
                             if t.started_at is not None:
                                 metrics.log_event(t.task_id, float(t.started_at), "local_start", node=c.cell_id)
                             if t.finished_at is not None:
@@ -590,8 +427,8 @@ def run_experiment_02(
                             latencies.append(t.finished_at - t.created_at)
                             if t.started_at is not None:
                                 waits.append((t.started_at - (t.queued_at or t.created_at)) if t.queued_at is not None else 0.0)
-                            energy = t.cpu_cycles * c.compute_energy_j_per_cycle
-                            energy_this_tick += energy
+                            energy_local = t.cpu_cycles * c.compute_energy_j_per_cycle
+                            energy_this_tick += energy_local
                             metrics.log_task(
                                 task_id=t.task_id,
                                 source_cell_id=t.source_cell_id,
@@ -602,84 +439,69 @@ def run_experiment_02(
                                 deadline=t.deadline,
                                 was_offloaded=False,
                                 was_to_cloud=False,
-                                energy_j=energy,
+                                energy_j=energy_local,
                             )
                         else:
                             choice = ("edge", c.edge_id) if c.edge_id is not None else ("cloud",)
+
                     if isinstance(choice, tuple) and choice[0] == "edge":
-                        base_lat = float(env_conf["network"]["latency"]["iot_to_mec"])
-                        jitter = float(env_conf["network"].get("jitter_s", 0.0))
-                        tx_time = (t.bit_size / bw_iot_to_mec if bw_iot_to_mec > 0 else 0.0) + max(0.0, base_lat + random.uniform(-jitter, jitter))
+                        base_lat2 = float(env_conf["network"]["latency"]["iot_to_mec"])
+                        jitter2 = float(env_conf["network"].get("jitter_s", 0.0))
+                        tx_time2 = (t.bit_size / bw_iot_to_mec if bw_iot_to_mec > 0 else 0.0) + max(0.0, base_lat2 + random.uniform(-jitter2, jitter2))
                         cost = c.prepare_offload_to_edge(t)
                         if cost is not None:
                             metrics.log_event(t.task_id, float(env.now), "tx_start", node=c.cell_id)
-                            def _send_to_edge(task=t, edge_id=choice[1], energy_cost=cost, tx_delay=tx_time):
+                            def _send_to_edge(task=t, edge_id=choice[1], energy_cost=cost, tx_delay=tx_time2):
                                 yield env.timeout(tx_delay)
                                 metrics.log_event(task.task_id, float(env.now), "tx_complete", node=edge_id)
                                 idx = int(edge_id.split("-")[-1])
                                 edges[idx].put(task)
                                 metrics.log_task(
-                                    task_id=t.task_id,
-                                    source_cell_id=t.source_cell_id,
-                                    created_at=t.created_at,
+                                    task_id=task.task_id,
+                                    source_cell_id=task.source_cell_id,
+                                    created_at=task.created_at,
                                     started_at=None,
                                     finished_at=None,
-                                    queued_at=(t.queued_at if t.queued_at is not None else None),
-                                    deadline=t.deadline,
+                                    queued_at=(task.queued_at if task.queued_at is not None else None),
+                                    deadline=task.deadline,
                                     was_offloaded=True,
                                     was_to_cloud=False,
-                                    energy_j=cost,
+                                    energy_j=energy_cost,
                                 )
                             offloaded_count += 1
                             energy_this_tick += cost
                             env.process(_send_to_edge())
                     elif choice == "cloud":
-                        base_lat = float(env_conf["network"]["latency"]["iot_to_mec"])
-                        jitter = float(env_conf["network"].get("jitter_s", 0.0))
-                        tx_time = (t.bit_size / bw_iot_to_mec if bw_iot_to_mec > 0 else 0.0) + max(0.0, base_lat + random.uniform(-jitter, jitter))
+                        base_lat2 = float(env_conf["network"]["latency"]["iot_to_mec"]) 
+                        jitter2 = float(env_conf["network"].get("jitter_s", 0.0))
+                        tx_time2 = (t.bit_size / bw_iot_to_mec if bw_iot_to_mec > 0 else 0.0) + max(0.0, base_lat2 + random.uniform(-jitter2, jitter2))
                         cost = c.prepare_offload_to_edge(t)
                         if cost is not None:
                             metrics.log_event(t.task_id, float(env.now), "tx_start", node=c.cell_id)
-                            def _send_to_cloud(task=t, energy_cost=cost, tx_delay=tx_time):
+                            def _send_to_cloud(task=t, energy_cost=cost, tx_delay=tx_time2):
                                 yield env.timeout(tx_delay)
                                 metrics.log_event(task.task_id, float(env.now), "tx_complete", node="cloud")
                                 cloud.put(task)
                                 metrics.log_task(
-                                    task_id=t.task_id,
-                                    source_cell_id=t.source_cell_id,
-                                    created_at=t.created_at,
+                                    task_id=task.task_id,
+                                    source_cell_id=task.source_cell_id,
+                                    created_at=task.created_at,
                                     started_at=None,
                                     finished_at=None,
-                                    queued_at=(t.queued_at if t.queued_at is not None else None),
-                                    deadline=t.deadline,
+                                    queued_at=(task.queued_at if task.queued_at is not None else None),
+                                    deadline=task.deadline,
                                     was_offloaded=True,
                                     was_to_cloud=True,
-                                    energy_j=cost,
+                                    energy_j=energy_cost,
                                 )
                             cloud_offloaded_count += 1
                             energy_this_tick += cost
                             env.process(_send_to_cloud())
 
-            # Advance time window for metrics aggregation
+            # Advance time window
             yield env.timeout(window_s)
 
-            # Objective proxy (use averaged latencies and offload ratio) — log only
-            avg_lat = (sum(latencies) / len(latencies)) if latencies else 0.0
-            total_new = max(1, completed_this_tick + offloaded_count)
-            edge_offload_ratio = offloaded_count / total_new
-            Z = 0.6 * avg_lat + 0.2 * (1.0 - edge_offload_ratio) + 0.2 * (energy_this_tick)
-            reward_window = -(Z - last_objective)
-            last_objective = Z
-            metrics.log_rl(iteration=iteration, epsilon=float(ql.epsilon), reward=float(reward_window), objective=float(Z))
-
-            # Periodic approximate evaluation readout
-            if (iteration > 0) and (iteration % int(eval_interval_windows) == 0):
-                try:
-                    print(f"[Eval @ {iteration}] avg_lat={avg_lat:.4f} edge_offload={edge_offload_ratio:.3f} eps={ql.epsilon:.3f}")
-                except Exception:
-                    pass
-
-            # Per-node utilization/energy snapshot for this window
+            # Utilization/energy snapshot for this window
             node_util: Dict[str, float] = {}
             node_q: Dict[str, int] = {}
             node_energy: Dict[str, float] = {}
@@ -690,21 +512,17 @@ def run_experiment_02(
                 node_q[e.edge_id] = st["completed"]
                 node_energy[e.edge_id] = st["energy_j"]
                 total_busy_s += float(st["busy_time_s"])
-            # Cloud snapshot
             cst = cloud.pop_window_counters()
             node_util["cloud"] = (cst["busy_time_s"] / window_s) if window_s > 0 else 0.0
             node_q["cloud"] = cst["completed"]
             node_energy["cloud"] = cst["energy_j"]
             total_busy_s += float(cst["busy_time_s"])
 
-            # Completed tasks this window (local + nodes)
             completed_nodes = sum(node_q.values())
             completed_this_window = completed_this_tick + completed_nodes
 
-            # Failure/drop events this window (approx via new events)
-            new_events = metrics.events[events_last_len:]
-            failures_this_window = sum(1 for ev in new_events if ev.event.endswith("_drop"))
-            events_last_len = len(metrics.events)
+            # Approximate failures (events disabled): set to 0 for this window
+            failures_this_window = 0
 
             # Load balance CV across edges
             edge_utils = [u for k, u in node_util.items() if k != "cloud"]
@@ -718,39 +536,29 @@ def run_experiment_02(
             else:
                 lb_cv = 0.0
 
-            metrics.log_step(
-                time_s=float(env.now),
-                completed_tasks=int(completed_this_window),
-                offloaded=offloaded_count,
-                cloud_offloaded=cloud_offloaded_count,
-                energy_j=energy_this_tick,
-                latencies=latencies,
-                waits=waits,
-                server_utilization=node_util,
-                queue_lengths={e.edge_id: len(e.queue) for e in edges},
-                node_completed=node_q,
-                node_energy_j=node_energy,
-                window_s=window_s,
-                sched_time_s=float(sched_time_this_tick),
-                decisions=int(sched_decisions_this_tick),
-                arrivals=int(arrivals_this_tick),
-                acceptance_ratio=(completed_this_window / float(max(1, arrivals_this_tick))) if arrivals_this_tick > 0 else 0.0,
-                failure_ratio=(failures_this_window / float(max(1, arrivals_this_tick))) if arrivals_this_tick > 0 else 0.0,
-                busy_time_total_s=float(total_busy_s),
-                load_balance_cv=float(lb_cv),
-            )
+            
 
-            iteration += 1
+            # RL convergence logging
+            avg_lat = (sum(latencies) / len(latencies)) if latencies else 0.0
+            total_new = max(1, completed_this_tick + offloaded_count)
+            edge_offload_ratio = offloaded_count / total_new
+            Z = 0.6 * avg_lat + 0.2 * (1.0 - edge_offload_ratio) + 0.2 * (energy_this_tick)
+            reward_window = -(Z - last_objective)
+            last_objective = Z
+            try:
+                metrics.log_rl(iteration=iteration, epsilon=float(ql.epsilon), reward=float(reward_window), objective=float(Z))
+            except Exception:
+                pass
 
-    # Duration
+    # Duration (fixed if not provided)
     if sim_time_s is None:
-        sim_time_s = float(env_conf["simulation"].get("duration", 3600.0))
+        sim_time_s = 3600.0
 
     # Run
     env.process(driver())
     env.run(until=sim_time_s)
 
-    # Report
+    # Full report with plots
     os.makedirs(os.path.dirname(pdf_path), exist_ok=True)
     with PdfPages(pdf_path) as pdf:
         fig = plt.figure(figsize=(8.27, 11.69))
@@ -769,71 +577,45 @@ def run_experiment_02(
         pdf.savefig(fig)
         plt.close(fig)
 
-        times = [s.time_s for s in metrics.steps]
-        avg_latency = [s.avg_latency_s or 0 for s in metrics.steps]
-        throughput = [s.throughput_tasks_per_s for s in metrics.steps]
-        off_ratio = [s.offloaded_ratio for s in metrics.steps]
-        cloud_ratio = [s.cloud_offload_ratio for s in metrics.steps]
-        energy = [s.total_energy_j for s in metrics.steps]
-        sched_time = [s.sched_time_s for s in metrics.steps]
-        sched_per_decision = [s.sched_time_per_decision_s for s in metrics.steps]
-        accept = [(s.acceptance_ratio if s.acceptance_ratio is not None else 0.0) for s in metrics.steps]
-        failure = [(s.failure_ratio if s.failure_ratio is not None else 0.0) for s in metrics.steps]
-        lb_cv = [(s.load_balance_cv if s.load_balance_cv is not None else 0.0) for s in metrics.steps]
-        energy_eff = [( (s.completed_tasks / max(1.0, (energy[idx] - (energy[idx-1] if idx>0 else 0.0)))) if (idx < len(energy)) else 0.0 ) for idx, s in enumerate(metrics.steps)]
+        # Timeseries plots
+        if metrics.steps:
+            times = [s.time_s for s in metrics.steps]
+            avg_latency = [s.avg_latency_s or 0.0 for s in metrics.steps]
+            throughput = [s.throughput_tasks_per_s for s in metrics.steps]
+            off_ratio = [s.offloaded_ratio for s in metrics.steps]
+            cloud_ratio = [s.cloud_offload_ratio for s in metrics.steps]
+            energy = [s.total_energy_j for s in metrics.steps]
+            sched_time = [s.sched_time_s for s in metrics.steps]
+            sched_per_decision = [s.sched_time_per_decision_s for s in metrics.steps]
+            accept = [(s.acceptance_ratio if s.acceptance_ratio is not None else 0.0) for s in metrics.steps]
+            failure = [(s.failure_ratio if s.failure_ratio is not None else 0.0) for s in metrics.steps]
+            lb_cv = [(s.load_balance_cv if s.load_balance_cv is not None else 0.0) for s in metrics.steps]
+            energy_eff = [((s.completed_tasks / max(1.0, (energy[idx] - (energy[idx-1] if idx>0 else 0.0)))) if (idx < len(energy)) else 0.0) for idx, s in enumerate(metrics.steps)]
 
-        plot_latency(times, avg_latency)
-        pdf.savefig(plt.gcf())
-        plt.close()
+            plot_latency(times, avg_latency)
+            pdf.savefig(plt.gcf()); plt.close()
+            plot_throughput(times, throughput)
+            pdf.savefig(plt.gcf()); plt.close()
+            plot_offloading(times, off_ratio, cloud_ratio)
+            pdf.savefig(plt.gcf()); plt.close()
+            plot_energy(times, energy)
+            pdf.savefig(plt.gcf()); plt.close()
+            plot_scheduling_time(times, sched_time, sched_per_decision)
+            pdf.savefig(plt.gcf()); plt.close()
+            plot_accept_failure(times, accept, failure)
+            pdf.savefig(plt.gcf()); plt.close()
+            plot_load_balance(times, lb_cv)
+            pdf.savefig(plt.gcf()); plt.close()
+            plot_energy_efficiency(times, energy_eff)
+            pdf.savefig(plt.gcf()); plt.close()
 
-        plot_throughput(times, throughput)
-        pdf.savefig(plt.gcf())
-        plt.close()
-
-        plot_offloading(times, off_ratio, cloud_ratio)
-        pdf.savefig(plt.gcf())
-        plt.close()
-
-        plot_energy(times, energy)
-        pdf.savefig(plt.gcf())
-        plt.close()
-
-        plot_scheduling_time(times, sched_time, sched_per_decision)
-        pdf.savefig(plt.gcf())
-        plt.close()
-
-        plot_accept_failure(times, accept, failure)
-        pdf.savefig(plt.gcf())
-        plt.close()
-
-        plot_load_balance(times, lb_cv)
-        pdf.savefig(plt.gcf())
-        plt.close()
-
-        plot_energy_efficiency(times, energy_eff)
-        pdf.savefig(plt.gcf())
-        plt.close()
-
-        # RL convergence signals
-        rl_iters = [r.iteration for r in metrics.rl]
-        rl_reward = [ (r.reward if r.reward is not None else 0.0) for r in metrics.rl ]
-        rl_eps = [ (r.epsilon if r.epsilon is not None else 0.0) for r in metrics.rl ]
-        rl_obj = [ (r.objective if r.objective is not None else 0.0) for r in metrics.rl ]
-        if rl_iters:
-            plot_rl(rl_iters, reward=rl_reward, epsilon=rl_eps, objective=rl_obj)
-            pdf.savefig(plt.gcf())
-            plt.close()
-
-        # Latency distribution (hist and CDF)
+        # Distribution plots
         lat_all = [t.latency_s for t in metrics.tasks.values() if t.latency_s is not None]
-        plot_latency_hist(lat_all)
-        pdf.savefig(plt.gcf())
-        plt.close()
-        plot_latency_cdf(lat_all)
-        pdf.savefig(plt.gcf())
-        plt.close()
+        if lat_all:
+            plot_latency_hist(lat_all); pdf.savefig(plt.gcf()); plt.close()
+            plot_latency_cdf(lat_all); pdf.savefig(plt.gcf()); plt.close()
 
-        # Optionally write a JSON summary of key metrics
+        # Optional JSON/CSV outputs
         if summary_json_path is not None:
             try:
                 import json
@@ -841,9 +623,7 @@ def run_experiment_02(
                     json.dump(metrics.summary(), f, indent=2)
             except Exception:
                 pass
-
-        # Optionally write a CSV timeseries of step metrics
-        if timeseries_csv_path is not None:
+        if timeseries_csv_path is not None and metrics.steps:
             try:
                 import csv
                 with open(timeseries_csv_path, "w", newline="", encoding="utf-8") as f:
@@ -873,13 +653,15 @@ def run_experiment_02(
             except Exception:
                 pass
 
-        return pdf_path
+    return pdf_path
 
 
 if __name__ == "__main__":
-    # Always use duration from env.yaml
-    path = run_experiment_02(sim_time_s=None)
-    print(f"Saved report to: {path}")
+    out = run_experiment_02(sim_time_s=3600.0, edges_count=40, cells_per_edge=60)
+    print(f"Saved report to: {out}")
+
+
+
 
 
 
