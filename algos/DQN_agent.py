@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Callable, Deque, Hashable, List, Sequence, Tuple
@@ -9,6 +9,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
+
+from algos.device_utils import select_device
 
 
 State = Hashable
@@ -60,7 +62,7 @@ class DQNAgent:
 	learn_start: int = 1000
 	update_freq: int = 1
 	target_update_freq: int = 1000
-	device: str = field(default_factory=lambda: "cuda" if torch.cuda.is_available() else "cpu")
+	device: str = field(default_factory=select_device)
 	# Options
 	use_double_dqn: bool = True
 	use_per: bool = True

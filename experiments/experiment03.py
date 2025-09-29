@@ -172,11 +172,11 @@ def make_task_factory(bit_size_bits: int, memory_bytes: int, cpu_cycles: int, de
     return _factory
 
 
-def run_experiment_02(
+def run_experiment_03(
     sim_time_s: Optional[float] = None,
     env_cfg_path: str = os.path.join("data", "env.yaml"),
     algo_cfg_path: str = os.path.join("data", "algo.yaml"),
-    pdf_path: str = os.path.join("data", "Result_exp02.pdf"),
+    pdf_path: str = os.path.join("data", "Result_exp03.pdf"),
     edges_count: int = 200,
     cells_per_edge: int = 20,
     lambda_per_s: float = 0.005,
@@ -195,7 +195,11 @@ def run_experiment_02(
     # DQN training knobs integrated into the main workflow
     warmup_windows: int = 5,
     eval_interval_windows: int = 10,
- ) -> str:
+    # Edge-focused parameters
+    edge_offload_bias: float = 0.8,  # Higher bias towards edge offloading
+    cloud_penalty: float = 0.3,  # Penalty for cloud offloading
+    local_penalty: float = 0.1,  # Small penalty for local execution
+) -> str:
     # Load configs
     env_raw = load_yaml(env_cfg_path)
     algo_raw = load_yaml(algo_cfg_path)
@@ -324,10 +328,19 @@ def run_experiment_02(
         steps_per_call=int(sa_conf.get("steps_per_call", 20)),
     )
     policy = QLSAWrapper(ql=ql, sa=sa)
+    
+    # DQN training backlog (shared with driver)
+    training_backlog = []
+    
     def driver():
+        nonlocal training_backlog
         window_s = 1.0
         iteration = 0
         last_objective = 0.0
+        
+        # DQN training episode tracking
+        training_episodes = 0
+        max_training_episodes = 10  # Run exactly 10 training iterations
         
         # events tracking disabled to reduce memory; failure ratio approximated as 0
         while True:
@@ -349,23 +362,28 @@ def run_experiment_02(
                     t.source_cell_id = c.cell_id
                     # RL action set: local, cloud, or any edge
                     actions = ["local", "cloud"] + [("edge", e.edge_id) for e in edges]
-                    def _shaping(act):
+                    
+                    # Edge-focused score shaping function
+                    def _edge_focused_shaping(act):
                         if act == "local":
-                            return 0.3
+                            return -local_penalty  # Small penalty for local execution
                         if act == "cloud":
-                            return 0.05
+                            return -cloud_penalty  # Higher penalty for cloud offloading
+                        if isinstance(act, tuple) and act[0] == "edge":
+                            return edge_offload_bias  # High reward for edge offloading
                         return 0.0
                     _t0 = time.perf_counter()
                     if iteration < int(warmup_windows):
-                        # Heuristic warm-up: try local, then first edge, else cloud
-                        if "local" in actions:
+                        # Edge-focused warm-up: try edge first, then local, else cloud
+                        if any(isinstance(a, tuple) and a[0] == "edge" for a in actions):
+                            # Prefer the assigned edge for this cell
+                            choice = ("edge", c.edge_id) if c.edge_id is not None else next(a for a in actions if isinstance(a, tuple) and a[0] == "edge")
+                        elif "local" in actions:
                             choice = "local"
-                        elif any(isinstance(a, tuple) and a[0] == "edge" for a in actions):
-                            choice = next(a for a in actions if isinstance(a, tuple) and a[0] == "edge")
                         else:
                             choice = "cloud"
                     else:
-                        choice = policy.select_action(c.cell_id, actions, score_shaping=_shaping)
+                        choice = policy.select_action(c.cell_id, actions, score_shaping=_edge_focused_shaping)
                     sched_time_this_tick += (time.perf_counter() - _t0)
                     sched_decisions_this_tick += 1
 
@@ -397,6 +415,14 @@ def run_experiment_02(
                         "attempt": int(attempt),
                         "offload_type": offload_type,
                     }, 0.0)
+                    
+                    # Apply edge-focused reward shaping
+                    if offload_type == "edge":
+                        r += edge_offload_bias  # Bonus for edge offloading
+                    elif offload_type == "cloud":
+                        r -= cloud_penalty  # Penalty for cloud offloading
+                    elif offload_type == "local":
+                        r -= local_penalty  # Small penalty for local execution
                     try:
                         policy.update(
                             state=c.cell_id,
@@ -538,17 +564,186 @@ def run_experiment_02(
 
             
 
-            # RL convergence logging
+            # RL convergence logging with edge-focused metrics
             avg_lat = (sum(latencies) / len(latencies)) if latencies else 0.0
             total_new = max(1, completed_this_tick + offloaded_count)
             edge_offload_ratio = offloaded_count / total_new
-            Z = 0.6 * avg_lat + 0.2 * (1.0 - edge_offload_ratio) + 0.2 * (energy_this_tick)
+            cloud_offload_ratio = cloud_offloaded_count / total_new if total_new > 0 else 0.0
+            local_ratio = (completed_this_tick - offloaded_count) / total_new if total_new > 0 else 0.0
+            
+            # Edge-focused objective function
+            Z = 0.4 * avg_lat + 0.4 * (1.0 - edge_offload_ratio) + 0.1 * cloud_offload_ratio + 0.1 * (energy_this_tick / 1000.0)
             reward_window = -(Z - last_objective)
             last_objective = Z
+            
+            # Log step with proper metrics including busy time
+            metrics.log_step(
+                time_s=float(env.now),
+                completed_tasks=completed_this_tick,
+                offloaded=offloaded_count,
+                cloud_offloaded=cloud_offloaded_count,
+                energy_j=energy_this_tick,
+                latencies=latencies,
+                waits=waits,
+                server_utilization=node_util,
+                queue_lengths={k: v for k, v in node_q.items()},
+                node_completed=node_q,
+                node_energy_j=node_energy,
+                window_s=window_s,
+                sched_time_s=sched_time_this_tick,
+                decisions=sched_decisions_this_tick,
+                arrivals=arrivals_this_tick,
+                acceptance_ratio=1.0 - (failures_this_window / max(1, arrivals_this_tick)) if arrivals_this_tick > 0 else None,
+                failure_ratio=failures_this_window / max(1, arrivals_this_tick) if arrivals_this_tick > 0 else None,
+                busy_time_total_s=total_busy_s,
+                load_balance_cv=lb_cv,
+            )
+            
             try:
                 metrics.log_rl(iteration=iteration, epsilon=float(ql.epsilon), reward=float(reward_window), objective=float(Z))
             except Exception:
                 pass
+
+            # DQN Training Episodes - trigger training every eval_interval_windows
+            if iteration > 0 and iteration % eval_interval_windows == 0 and training_episodes < max_training_episodes:
+                training_episodes += 1
+                print(f"Starting DQN training episode {training_episodes} at iteration {iteration}")
+                
+                # Training episode data collection
+                episode_data = {
+                    "episode": training_episodes,
+                    "iteration": iteration,
+                    "training_steps": [],
+                    "total_reward": 0.0,
+                    "edge_actions": 0,
+                    "cloud_actions": 0,
+                    "local_actions": 0,
+                    "successful_actions": 0,
+                    "avg_latency": 0.0,
+                    "avg_energy": 0.0,
+                }
+                
+                # Run a focused training session
+                training_steps = 100  # 100 training steps per episode
+                episode_latencies = []
+                episode_energies = []
+                
+                for step in range(training_steps):
+                    # Sample a random cell for training
+                    cell = random.choice(cells)
+                    actions = ["local", "cloud"] + [("edge", e.edge_id) for e in edges]
+                    
+                    # Use current policy for action selection
+                    choice = policy.select_action(cell.cell_id, actions, score_shaping=_edge_focused_shaping)
+                    
+                    # Simulate task execution and reward
+                    offload_type = "local" if choice == "local" else ("cloud" if choice == "cloud" else "edge")
+                    base_lat = float(env_conf["network"]["latency"]["iot_to_mec"]) if offload_type != "local" else 0.0
+                    jitter = float(env_conf["network"].get("jitter_s", 0.0)) if offload_type != "local" else 0.0
+                    tx_time = 0.0 if offload_type == "local" else ((bit_size_bits / bw_iot_to_mec if bw_iot_to_mec > 0 else 0.0) + max(0.0, base_lat + random.uniform(-jitter, jitter)))
+                    
+                    if offload_type == "local":
+                        compute_time = cpu_cycles / cell_cpu_rate
+                        energy = cpu_cycles * cell_energy_per_cycle
+                        success_p = 1.0 - float(failure_prob_local)
+                    elif offload_type == "cloud":
+                        compute_time = cpu_cycles / cloud_cpu_rate
+                        energy = (bit_size_bits * float(env_conf["cell"]["tx_energy_per_bit"])) + (cpu_cycles * cloud_compute_energy_per_cycle)
+                        success_p = 1.0 - float(failure_prob_cloud)
+                    else:
+                        compute_time = cpu_cycles / edge_cpu_rate
+                        energy = (bit_size_bits * float(env_conf["cell"]["tx_energy_per_bit"])) + (cpu_cycles * edge_compute_energy_per_cycle)
+                        success_p = 1.0 - float(failure_prob_edge)
+                    
+                    latency_est = tx_time + compute_time
+                    success_flag = random.random() < success_p
+                    
+                    r = compute_reward({
+                        "success": bool(success_flag),
+                        "latency": float(latency_est),
+                        "energy": float(energy),
+                        "attempt": 1,
+                        "offload_type": offload_type,
+                    }, 0.0)
+                    
+                    # Apply edge-focused reward shaping
+                    if offload_type == "edge":
+                        r += edge_offload_bias
+                    elif offload_type == "cloud":
+                        r -= cloud_penalty
+                    elif offload_type == "local":
+                        r -= local_penalty
+                    
+                    # Collect training step data
+                    step_data = {
+                        "step": step,
+                        "cell_id": cell.cell_id,
+                        "action": choice,
+                        "offload_type": offload_type,
+                        "reward": float(r),
+                        "success": success_flag,
+                        "latency": float(latency_est),
+                        "energy": float(energy),
+                        "epsilon": float(ql.epsilon),
+                    }
+                    episode_data["training_steps"].append(step_data)
+                    episode_data["total_reward"] += float(r)
+                    
+                    # Count action types
+                    if offload_type == "edge":
+                        episode_data["edge_actions"] += 1
+                    elif offload_type == "cloud":
+                        episode_data["cloud_actions"] += 1
+                    else:
+                        episode_data["local_actions"] += 1
+                    
+                    if success_flag:
+                        episode_data["successful_actions"] += 1
+                        episode_latencies.append(float(latency_est))
+                        episode_energies.append(float(energy))
+                    
+                    # Update policy
+                    try:
+                        policy.update(
+                            state=cell.cell_id,
+                            action=choice,
+                            reward=float(r),
+                            next_state=cell.cell_id,
+                            next_actions=actions,
+                            done=True,
+                        )
+                    except TypeError:
+                        ql.update(
+                            state=cell.cell_id,
+                            action=choice,
+                            reward=float(r),
+                            next_state=cell.cell_id,
+                            next_actions=actions,
+                            done=True,
+                        )
+                
+                # Calculate episode statistics
+                episode_data["avg_latency"] = sum(episode_latencies) / len(episode_latencies) if episode_latencies else 0.0
+                episode_data["avg_energy"] = sum(episode_energies) / len(episode_energies) if episode_energies else 0.0
+                episode_data["success_rate"] = episode_data["successful_actions"] / training_steps
+                episode_data["edge_action_ratio"] = episode_data["edge_actions"] / training_steps
+                episode_data["cloud_action_ratio"] = episode_data["cloud_actions"] / training_steps
+                episode_data["local_action_ratio"] = episode_data["local_actions"] / training_steps
+                
+                # Add to training backlog
+                training_backlog.append(episode_data)
+                
+                print(f"Completed DQN training episode {training_episodes}:")
+                print(f"  - Edge actions: {episode_data['edge_actions']} ({episode_data['edge_action_ratio']:.1%})")
+                print(f"  - Cloud actions: {episode_data['cloud_actions']} ({episode_data['cloud_action_ratio']:.1%})")
+                print(f"  - Local actions: {episode_data['local_actions']} ({episode_data['local_action_ratio']:.1%})")
+                print(f"  - Success rate: {episode_data['success_rate']:.1%}")
+                print(f"  - Avg latency: {episode_data['avg_latency']:.3f}s")
+                print(f"  - Avg energy: {episode_data['avg_energy']:.3f}J")
+                print(f"  - Total reward: {episode_data['total_reward']:.3f}")
+                print(f"  - Epsilon: {episode_data['training_steps'][-1]['epsilon']:.3f}")
+
+            iteration += 1
 
     # Duration (fixed if not provided)
     if sim_time_s is None:
@@ -564,8 +759,12 @@ def run_experiment_02(
         fig = plt.figure(figsize=(8.27, 11.69))
         fig.clf()
         text = [
-            "Experiment 02 - MEC with DQL+SA (env.yaml & algo.yaml)",
+            "Experiment 03 - Edge-Focused MEC with DQN Training Episodes",
             f"Sim time: {sim_time_s}s",
+            f"Edge offload bias: {edge_offload_bias}",
+            f"Cloud penalty: {cloud_penalty}",
+            f"Local penalty: {local_penalty}",
+            f"Training episodes: {len(training_backlog)}",
             "",
             "Summary:",
         ]
@@ -619,8 +818,11 @@ def run_experiment_02(
         if summary_json_path is not None:
             try:
                 import json
+                summary_data = metrics.summary()
+                summary_data["training_backlog"] = training_backlog
+                summary_data["training_episodes_completed"] = len(training_backlog)
                 with open(summary_json_path, "w", encoding="utf-8") as f:
-                    json.dump(metrics.summary(), f, indent=2)
+                    json.dump(summary_data, f, indent=2)
             except Exception:
                 pass
         if timeseries_csv_path is not None and metrics.steps:
@@ -657,7 +859,7 @@ def run_experiment_02(
 
 
 if __name__ == "__main__":
-    out = run_experiment_02(sim_time_s=3600.0, edges_count=40, cells_per_edge=60)
+    out = run_experiment_03(sim_time_s=3600.0, edges_count=40, cells_per_edge=60)
     print(f"Saved report to: {out}")
 
 

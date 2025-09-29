@@ -1,9 +1,9 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 """
 Short Prioritized Recipe (DQN training)
 
-1) Warm-up buffer: run a simple heuristic (local-first) for 5k–20k
+1) Warm-up buffer: run a simple heuristic (local-first) for 5kâ€“20k
    transitions to fill replay before learning.
 2) Add strict attempt caps: enforce max_attempts_per_task=3 and penalize
    retries in the reward; reject further retries.
@@ -14,7 +14,7 @@ Short Prioritized Recipe (DQN training)
    can be added later]. Sync target every 1000 steps.
 5) Monitoring & eval: every 10k env steps, freeze policy and run 3 eval
    episodes on a slightly noisier env (jitter, small failure prob).
-6) Ablations: baseline DQN → +PER → +Double → +n-step → +SA.
+6) Ablations: baseline DQN â†’ +PER â†’ +Double â†’ +n-step â†’ +SA.
 """
 
 import os
@@ -27,6 +27,7 @@ import numpy as np
 import torch
 
 from algos.DQN_agent import DQNAgent
+from algos.device_utils import select_device
 from algos.dqn_utils import compute_reward
 from Env.utils import energy_per_cycle_from_power
 
@@ -34,7 +35,7 @@ from Env.utils import energy_per_cycle_from_power
 # ---------- hyperparams ----------
 CONFIG: Dict[str, Any] = {
     "seed": 42,
-    "device": "cuda" if torch.cuda.is_available() else "cpu",
+    "device": select_device(),
     "total_env_steps": 300_000,
     "warmup_steps": 10_000,
     "batch_size": 64,
@@ -56,11 +57,13 @@ CONFIG: Dict[str, Any] = {
 # ----------------------------------
 
 
-def set_seed(seed: int) -> None:
+def set_seed(seed: int, device: str | None = None) -> None:
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
-    if torch.cuda.is_available():
+    if device is None:
+        device = select_device()
+    if device == "cuda":
         torch.cuda.manual_seed_all(seed)
 
 
@@ -189,7 +192,7 @@ class MECTrainEnv:
         if success:
             done = True
         elif self._attempt >= self.max_attempts:
-            # Cap reached — reject more retries
+            # Cap reached â€” reject more retries
             done = True
 
         info = {
@@ -291,8 +294,8 @@ def evaluate_policy(env: MECTrainEnv, agent: DQNAgent, episodes: int = 3) -> Dic
 
 
 def train() -> None:
-    set_seed(int(CONFIG["seed"]))
     device = CONFIG["device"]
+    set_seed(int(CONFIG["seed"]), device=device)
 
     env = MECTrainEnv(
         cfg_path=str(CONFIG["env_cfg_path"]),
@@ -342,4 +345,6 @@ def train() -> None:
 
 if __name__ == "__main__":
     train()
+
+
 
