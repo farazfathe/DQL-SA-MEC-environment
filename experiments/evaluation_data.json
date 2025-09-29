@@ -1,0 +1,262 @@
+{
+  "papers": [
+    {
+      "title": "An Online Simulated Annealing-Based Task Offloading Strategy for a Mobile Edge Architecture",
+      "authors": "A. Mahjoubi et al.",
+      "year": 2024,
+      "algorithm": "SATS (Simulated Annealing Task Scheduling)",
+      "evaluation_metrics": ["Acceptance Ratio", "Processing Time"],
+      "experimental_setup": {
+        "time_windows": 20,
+        "time_slots_per_window": 100,
+        "slot_duration": "0.2s",
+        "services": "4-6 tasks with 2-3 time window deadlines"
+      },
+      "results": {
+        "category_a_varying_devices": {
+          "conservative_predictor": "Acceptance ratio within 8% of optimal, processing time within 10% of true frequency",
+          "optimistic_predictor": "Acceptance ratios sometimes 26% worse than optimal"
+        },
+        "category_b_varying_frequency": {
+          "conservative_predictor": "Acceptance ratio fell below 90% only when frequency exceeded 1500 requests",
+          "optimistic_predictor": "Acceptance ratio fell below 90% at slightly more than 1300 requests"
+        }
+      }
+    },
+    {
+      "title": "Edge Server Selection with Round-Robin-Based Task Processing in Multiserver Mobile Edge Computing",
+      "authors": "Aljobory and Yazici",
+      "year": 2025,
+      "algorithm": "Round-Robin with various server selection mechanisms",
+      "evaluation_metrics": ["Average Task Sojourn Time"],
+      "experimental_setup": {
+        "simulation_environment": "Matlab simulator, real-world dataset from Oulu, Finland",
+        "scaled_parameters": "36 BSs, 1.5 km max distance",
+        "benchmark_parameters": {
+          "UE": 300,
+          "BSs": 36,
+          "ESs": 160,
+          "service_rate": "2.5 tasks/s",
+          "task_arrival_rate": "1.2 tasks/s"
+        }
+      },
+      "results": {
+        "server_selection_comparison": {
+          "LRC_FAT": "Superior performance, lower average task sojourn time",
+          "RS": "Better than benchmark",
+          "NS": "Poorest performance"
+        },
+        "user_population_effect": {
+          "LRC_FAT": "Very similar performance, LRC slightly better at 300 users (~0.3s to ~0.5s)",
+          "NS": "Least effective, ~5.3s (200 users) to ~11.7s (300 users)"
+        }
+      }
+    },
+    {
+      "title": "Optimal Computation Offloading Decisions Based on System Utility and Cost Balance",
+      "authors": "B. Zhang et al.",
+      "year": 2025,
+      "algorithm": "Improved Particle Swarm Optimization (PSO)",
+      "evaluation_metrics": ["Cost-Utility Ratio", "System Cost Value"],
+      "experimental_setup": {
+        "environment": "Industrial park edge system (500m x 500m)",
+        "nodes": "100 user nodes, 10 edge nodes",
+        "parameters": {
+          "edge_server_radius": "300m",
+          "task_data_size": "Uniform[200, 400]kB",
+          "processing_density": "500 cycles/kB",
+          "user_CPU": "500MHz",
+          "edge_server_CPU": "5000MHz"
+        }
+      },
+      "results": {
+        "cost_utility_ratio": {
+          "proposed_model": "Decreases cost-utility ratio by 7-26% compared to traditional cost optimization models",
+          "edge_nodes_5_20": "20-40% reduction in cost-utility ratio",
+          "edge_nodes_25_30": "50-80% reduction in cost-utility ratio"
+        },
+        "convergence": "Improved algorithm achieves lower optimal cost-utility ratio with ~15% shorter running time"
+      }
+    },
+    {
+      "title": "GCAGA: A Gini Coefficient-Based Optimization Strategy for Computation Offloading in Multi-User-Multi-Edge MEC Systems",
+      "authors": "Bai et al.",
+      "year": 2024,
+      "algorithm": "GCAGA (Gini Coefficient-based Adaptive Genetic Algorithm)",
+      "evaluation_metrics": ["EoU (Experience of Users)", "Convergence Speed"],
+      "experimental_setup": {
+        "environment": "Python with PyCUDA 2021.1, NVIDIA RTX3070",
+        "parameters": {
+          "B": "100 MHz",
+          "Pu": "0.1 W",
+          "flu": "5 MHz",
+          "fs": "[5, 40] MHz",
+          "du": "10 MB"
+        }
+      },
+      "results": {
+        "convergence_behavior": {
+          "GCAGA": "1% more EoU than AGA, nearly 2% more EoU than GA",
+          "speed_improvement": "Nearly 25% speed improvement over AGA, nearly 67% speed improvement over GA"
+        },
+        "performance": "GCAGA outperforms AGA and GA when resources are sufficient for partial offloading but not abundant"
+      }
+    },
+    {
+      "title": "Exact and Approximation Algorithms for Task Offloading with Service Caching and Dependency in Mobile Edge Computing",
+      "authors": "Cui and Zhang",
+      "year": 2025,
+      "algorithm": "TUL (1+ε)-approximation algorithm, BFF (exact algorithm based on DP and Bellman-Ford)",
+      "evaluation_metrics": ["Delay", "Running Time"],
+      "experimental_setup": {
+        "environment": "Intel i7-13700H (2.40 GHz, 16 GB RAM), MATLAB 2023b",
+        "system": "7 mobile devices, 3 edge servers, 1 cloud server",
+        "parameters": {
+          "ε": 0.4,
+          "fC": "2fEN = 10fEC",
+          "fEN": "10 GHz"
+        }
+      },
+      "results": {
+        "delay_performance": {
+          "TUL_Hermes": "Consistently achieve (1+ε)-approximation",
+          "BFF": "Identical to optimal solution"
+        },
+        "running_time": {
+          "TUL": "Significantly smaller running time than Hermes",
+          "BFF": "Running time proportional to M'^din"
+        }
+      }
+    },
+    {
+      "title": "Efficient Task Offloading Strategy for Energy-Constrained Edge Computing Environments: A Hybrid Optimization Approach",
+      "authors": "D. Alsadie",
+      "year": 2024,
+      "algorithm": "HybridTO (Hybrid Task Offloading integrating GWO and PSO)",
+      "evaluation_metrics": ["Energy Consumption", "Processing Time", "Offloading Utility"],
+      "experimental_setup": {
+        "ESs": 15,
+        "uplink_transmission_power": "20 dBm",
+        "system_bandwidth": "20 MHz",
+        "ES_execution_rate": "2-5 GHz",
+        "SEDs_execution_rate": "1 GHz",
+        "input_data_size": "20-100 MB",
+        "workload": "1×10^7 to 2.5×10^7 CPU cycles"
+      },
+      "results": {
+        "energy_consumption": "HybridTO closely aligns with Base_OES while outperforming Base_DPH baseline scheme",
+        "processing_time": "HybridTO outperforms Base_OES in execution speed, especially with larger task counts",
+        "offloading_utility": "HybridTO matches Base_OES performance and outperforms other baseline methods"
+      }
+    },
+    {
+      "title": "Multi-Agent Deep Reinforcement Learning-Based Inference Task Scheduling and Offloading for Maximum Inference Accuracy under Time and Energy Constraints",
+      "authors": "Ben Sada et al.",
+      "year": 2024,
+      "algorithm": "MASITO (Multi-Agent Deep Reinforcement Learning framework)",
+      "evaluation_metrics": ["Scheduling Time", "Accuracy", "Convergence"],
+      "experimental_setup": {
+        "dataset": "ImageNet-mini (3923 images, 10 KB to 10 MB)",
+        "edge_device": "Laptop with quad-core processor @ 3.0 GHz, 8 GB RAM",
+        "inference_models": {
+          "ShuffleNet-V2": "66.15% accuracy, 19.44ms",
+          "ResNet-18": "72.01% accuracy, 28.07ms",
+          "ResNet-34": "76.79% accuracy, 42.45ms",
+          "ResNeXt-101": "87.05% accuracy (edge servers)"
+        }
+      },
+      "results": {
+        "scheduling_time": "MASITO provides 60-90% lower scheduling times compared to GA, SA, and PSO",
+        "accuracy": "Comparable average accuracy in worst-case scenarios and superior accuracy in best-case scenarios",
+        "convergence": "MASITO remains unaffected by number of iterations, maintaining consistent scheduling time"
+      }
+    },
+    {
+      "title": "Efficient microservices offloading for cost optimization in diverse MEC cloud networks",
+      "authors": "Abdul Rasheed Mahesar et al.",
+      "year": 2024,
+      "algorithm": "OTSCOCA (Optimization Task Scheduling and Computational Offloading with Cost Awareness)",
+      "evaluation_metrics": ["Boot Time", "CPU Utilization", "Cost Optimization", "Task Failure Rate"],
+      "experimental_setup": {
+        "environment": "Windows Docker engine, 16h simulation time, 140 experiment repetitions",
+        "MEC_servers": {
+          "j1": "i3, 10000 MIPS/CORE, 0.5 cost",
+          "j2": "i5, 2000 MIPS/CORE, 0.8 cost",
+          "j3": "i7, 3000 MIPS/CORE, 0.9 cost",
+          "j4": "i9, 3000 MIPS/CORE, 0.05 cost"
+        },
+        "workloads": {
+          "Healthcare": "900 tasks, 5.9 MI",
+          "Augmented_Reality": "730 tasks, 7.2 MI",
+          "E-Transport": "660 tasks, 7.9 MI",
+          "3D_2D_Game": "900 tasks, 5.3 MI"
+        }
+      },
+      "results": {
+        "boot_time": "MCBMEC demonstrates decreased startup time compared to VM-based frameworks",
+        "cost_optimization": "OTSCOCA results in reduced application costs and ensures tasks are executed within specified timeframes",
+        "task_failure": "Lower failure ratio compared to baseline techniques"
+      }
+    },
+    {
+      "title": "Lightweight and delay-aware resource management scheme in smart grid IoT networks",
+      "authors": "Danni Liu et al.",
+      "year": 2025,
+      "algorithm": "DAMCO (Delay-Aware Mobile Computation Offloading scheme)",
+      "evaluation_metrics": ["Average Delay", "Resource Utilization", "Convergence"],
+      "experimental_setup": {
+        "simulation_time": "60s",
+        "mobile_users": 50,
+        "computation_power": "1-2W",
+        "bandwidth": "9×10^6 MHz (MU-MEC), 6×10^6 MHz (MEC-MEC)",
+        "CPU_frequencies": {
+          "local": "0.65-0.75 GHz",
+          "MEC-SBS": "1 GHz",
+          "MEC-MBS": "9 GHz"
+        }
+      },
+      "results": {
+        "delay_reduction": "DAMCO reduces task execution delay by 42.2%, 44.4%, and 62.9% relative to three baseline algorithms",
+        "convergence": "DAMCO outperforms OHA and other online benchmarks",
+        "resource_utilization": "Higher resource utilization compared to other online benchmarks"
+      }
+    },
+    {
+      "title": "Beyond boundaries: a hybrid cellular potts and particle swarm optimization model for energy and latency optimization in edge computing",
+      "authors": "Dinesh Sahu et al.",
+      "year": 2025,
+      "algorithm": "Hybrid CPM-PSO (Cellular Potts Model - Particle Swarm Optimization)",
+      "evaluation_metrics": ["Energy Consumption", "Latency", "QoS Improvement", "Resource Utilization", "Success Rate"],
+      "experimental_setup": {
+        "environment": "Python 3.9, SimPy framework, Intel Core i7 (3.2 GHz), 16 GB RAM",
+        "edge_nodes": "9-25",
+        "tasks": "50-500",
+        "parameters": {
+          "temperature": 5,
+          "weights": "α = 0.6, β = 0.4",
+          "PSO": "ω = 0.7, c1 = 2.0, c2 = 2.0, swarm size M = 30"
+        }
+      },
+      "results": {
+        "energy_consumption": "30-40% less energy compared to conventional scheduling methods (450J for 10 tasks, 100J for 100 tasks)",
+        "latency": "25-35% lower latencies compared to PSO-only and GA approaches (180ms for 10 tasks, 50ms for 100 tasks)",
+        "convergence": "CPM-PSO converges in 40 iterations vs 70 for PSO-only and 90 for GA",
+        "QoS_improvement": "50-70% improvement across 5-25 edge nodes",
+        "resource_utilization": "70-100% utilization efficiency across 5-25 edge nodes",
+        "success_rate": "90-95% task offloading success rate"
+      }
+    }
+  ],
+  "summary": {
+    "total_papers": 10,
+    "common_metrics": ["Energy Consumption", "Latency/Delay", "Processing Time", "Resource Utilization", "Cost Optimization"],
+    "common_algorithms": ["Particle Swarm Optimization (PSO)", "Genetic Algorithm (GA)", "Simulated Annealing (SA)", "Deep Reinforcement Learning (DRL)"],
+    "evaluation_environments": ["Simulation", "Real-world datasets", "Edge computing testbeds", "Mobile edge computing systems"],
+    "performance_improvements": {
+      "energy_efficiency": "7-80% improvements across different approaches",
+      "latency_reduction": "25-90% improvements in various scenarios",
+      "resource_utilization": "Up to 100% efficiency in optimal cases",
+      "cost_optimization": "20-80% cost reductions in different configurations"
+    }
+  }
+}
